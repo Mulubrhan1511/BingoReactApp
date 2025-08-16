@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import AOS from "aos";
 import "aos/dist/aos.css";
 import { io, Socket } from "socket.io-client";
@@ -6,7 +6,8 @@ import axios from "axios";
 import { useNavigate } from "react-router-dom";
 
 interface DrawnNumbersProps {
-  gameId: number;
+  gameId: number | string;
+  drawnNumbers?: number[];
 }
 
 const ranges = [
@@ -17,13 +18,58 @@ const ranges = [
   { label: "O", start: 61, end: 75, gradientFrom: "from-green-400", gradientTo: "to-green-600" },
 ];
 
+// Rolling ball layout/physics constants
+const BALL_DIAMETER_PX = 56; // visible ball size
+const BALL_RADIUS_PX = BALL_DIAMETER_PX / 2;
+const BALL_GAP_PX = 12; // spacing between settled balls
+const LEFT_PADDING_PX = 16; // left offset for the first ball
+const INITIAL_SPEED_PX_S = 700; // how fast a ball rolls in from the right
+const VERTICAL_SPEED_PX_S = 800; // how fast a ball snaps vertically when rows change
+const BOTTOM_OFFSET_PX = 18; // base bottom offset for tray content
+const MAX_BOTTOM_ROW_COUNT = 28; // wrap after 28 to top row
+
+// Helper to get gradient colors for a number
+const getGradientForNumber = (num: number) => {
+  const r = ranges.find(({ start, end }) => num >= start && num <= end);
+  return {
+    from: r?.gradientFrom ?? "from-gray-300",
+    to: r?.gradientTo ?? "to-gray-500",
+  };
+};
+
+// Ball type used for the rolling tray
+type RollingBall = {
+  id: number;
+  createdAt: number;
+  number: number;
+  x: number; // current center X in px relative to tray
+  y: number; // current vertical offset from bottom offset in px
+  targetX: number; // where it should settle (X)
+  targetY: number; // where it should settle (Y)
+  vx: number; // px/sec (negative when moving left)
+  rotationDeg: number; // visual rotation for realism
+  settled: boolean;
+  gradientFrom: string;
+  gradientTo: string;
+};
+
 const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
   const navigate = useNavigate();
   const [drawnNumbers, setDrawnNumbers] = useState<number[]>([]);
   const [currentNumber, setCurrentNumber] = useState<number | null>(null);
   const [animateKey, setAnimateKey] = useState(0);
   const [gameStatus, setGameStatus] = useState<"WAITING" | "IN_PROGRESS" | "PAUSED" | "FINISHED">("WAITING");
-  const [rollingNumbers, setRollingNumbers] = useState<Array<{number: number, isRolling: boolean, position: {x: number, y: number}}>>([]);
+
+  // Refs for physics loop
+  const trayRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastTsRef = useRef<number | null>(null);
+
+  const [rollingNumbers, setRollingNumbers] = useState<RollingBall[]>([]);
+  const rollingRef = useRef<RollingBall[]>([]);
+  useEffect(() => {
+    rollingRef.current = rollingNumbers;
+  }, [rollingNumbers]);
 
   // Check card modal state
   const [showCheckModal, setShowCheckModal] = useState(false);
@@ -35,8 +81,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
     ? ranges.find(({ start, end }) => currentNumber >= start && currentNumber <= end)
     : null;
 
-  const displayNumber =
-    currentNumber && currentRange ? `${currentRange.label}${currentNumber}` : "-";
+  const displayNumber = currentNumber && currentRange ? `${currentRange.label}${currentNumber}` : "-";
 
   useEffect(() => {
     AOS.init({ duration: 800, once: false });
@@ -66,8 +111,8 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
       setCurrentNumber(data.number);
       setDrawnNumbers((prev) => [...prev, data.number]);
       setAnimateKey((prev) => prev + 1);
-      
-      // Add new number to rolling animation
+
+      // Add new number to rolling animation (ball rolls in from the right and settles to the row)
       addRollingNumber(data.number);
     });
 
@@ -138,92 +183,170 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
     }
   };
 
-  // Rolling animation functions
-  const addRollingNumber = (number: number) => {
-    const newRollingNumber = {
-      number,
-      isRolling: true,
-      position: { x: Math.random() * 80, y: -100 } // Start above screen
+  // ---------- Rolling animation (physics) ----------
+  const startLoopIfNeeded = () => {
+    if (rafRef.current != null) return;
+    lastTsRef.current = null;
+    const step = (ts: number) => {
+      const prevTs = lastTsRef.current;
+      lastTsRef.current = ts;
+      const dt = prevTs == null ? 0 : (ts - prevTs) / 1000; // seconds
+
+      if (dt > 0) {
+        setRollingNumbers((prev) => {
+          const circumference = Math.PI * BALL_DIAMETER_PX;
+          const next = prev.map((b) => {
+            let x = b.x;
+            let y = b.y;
+            let rotationDeg = b.rotationDeg;
+            let vx = b.vx;
+            let settled = b.settled;
+
+            if (!b.settled) {
+              x = b.x + b.vx * dt;
+              rotationDeg = b.rotationDeg + (b.vx * dt / circumference) * 360;
+              if (x <= b.targetX) {
+                x = b.targetX;
+                rotationDeg = Math.round(rotationDeg);
+                vx = 0;
+                settled = true;
+              }
+            }
+
+            // Smooth vertical snap even for settled balls
+            if (Math.abs(b.targetY - y) > 0.5) {
+              const dir = b.targetY > y ? 1 : -1;
+              const dy = VERTICAL_SPEED_PX_S * dt * dir;
+              const nextY = y + dy;
+              if ((dir > 0 && nextY > b.targetY) || (dir < 0 && nextY < b.targetY)) {
+                y = b.targetY;
+              } else {
+                y = nextY;
+              }
+            } else {
+              y = b.targetY;
+            }
+
+            return { ...b, x, y, vx, rotationDeg, settled };
+          });
+          return next;
+        });
+      }
+
+      // Continue if there is at least one moving ball or any vertical movement pending
+      const hasMoving = rollingRef.current.some((b) => !b.settled || Math.abs(b.y - b.targetY) > 0.5);
+      if (hasMoving) {
+        rafRef.current = requestAnimationFrame(step);
+      } else {
+        rafRef.current = null;
+      }
     };
-    
-    setRollingNumbers(prev => [...prev, newRollingNumber]);
-    
-    // Start rolling animation
-    setTimeout(() => {
-      setRollingNumbers(prev => 
-        prev.map(rn => 
-          rn.number === number 
-            ? { ...rn, isRolling: false, position: calculateFinalPosition(prev, number) }
-            : rn
-        )
-      );
-    }, 2000); // Roll for 2 seconds
+    rafRef.current = requestAnimationFrame(step);
   };
 
-  const calculateFinalPosition = (existingNumbers: typeof rollingNumbers, newNumber: number) => {
-    // Calculate position based on existing numbers
-    const baseY = 85; // Bottom of screen
-    const spacing = 65; // Space between numbers
-    const maxPerRow = 7; // Maximum numbers per row
-    
-    if (existingNumbers.length === 0) {
-      return { x: 5, y: baseY };
-    }
-    
-    // Find the rightmost position in the current row
-    const currentRowNumbers = existingNumbers.filter(rn => 
-      Math.abs(rn.position.y - baseY) < 10
-    );
-    
-    if (currentRowNumbers.length < maxPerRow) {
-      // Add to current row
-      const rightmostX = Math.max(...currentRowNumbers.map(rn => rn.position.x));
-      return { x: rightmostX + spacing, y: baseY };
-    } else {
-      // Start new row above
-      const newRowY = baseY - 50;
-      return { x: 5, y: newRowY };
-    }
+  const layoutBalls = (balls: RollingBall[]) => {
+    const sorted = [...balls].sort((a, b) => a.createdAt - b.createdAt);
+    const total = sorted.length;
+
+    const bottomStartIndex = Math.max(0, total - MAX_BOTTOM_ROW_COUNT);
+    const topRow = sorted.slice(0, bottomStartIndex);
+    const bottomRow = sorted.slice(bottomStartIndex);
+
+    // Compute sequential X positions for each row independently
+    const computeTargetsForRow = (row: RollingBall[], rowIndex: number) => {
+      const targets: { id: number; targetX: number; targetY: number }[] = [];
+      const firstX = LEFT_PADDING_PX + BALL_RADIUS_PX;
+      const rowSpacingX = BALL_DIAMETER_PX + BALL_GAP_PX;
+      const rowOffsetY = rowIndex === 0 ? 0 : BALL_DIAMETER_PX + 12; // place second row above
+      row.forEach((ball, i) => {
+        targets.push({ id: ball.id, targetX: firstX + i * rowSpacingX, targetY: rowOffsetY });
+      });
+      return targets;
+    };
+
+    const targetsTop = computeTargetsForRow(topRow, 1);
+    const targetsBottom = computeTargetsForRow(bottomRow, 0);
+
+    const idToTarget = new Map<number, { targetX: number; targetY: number }>();
+    [...targetsTop, ...targetsBottom].forEach((t) => idToTarget.set(t.id, { targetX: t.targetX, targetY: t.targetY }));
+
+    return balls.map((b) => {
+      const t = idToTarget.get(b.id);
+      if (!t) return b;
+      return { ...b, targetX: t.targetX, targetY: t.targetY };
+    });
+  };
+
+  const addRollingNumber = (number: number) => {
+    const { from, to } = getGradientForNumber(number);
+
+    setRollingNumbers((prev) => {
+      const trayWidth = trayRef.current?.clientWidth ?? window.innerWidth;
+      const startX = trayWidth + BALL_DIAMETER_PX; // start off-screen on the right
+
+      const newBall: RollingBall = {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        createdAt: Date.now(),
+        number,
+        x: startX,
+        y: 0,
+        targetX: startX, // will be updated by layoutBalls
+        targetY: 0,
+        vx: -INITIAL_SPEED_PX_S,
+        rotationDeg: 0,
+        settled: false,
+        gradientFrom: from,
+        gradientTo: to,
+      };
+
+      const positioned = layoutBalls([...prev, newBall]);
+      return positioned;
+    });
+
+    // Ensure loop is running
+    startLoopIfNeeded();
   };
 
   // Check card from backend
   const checkCard = async () => {
-  if (!checkCardNumber) return;
+    if (!checkCardNumber) return;
 
-  try {
-    const res = await axios.post("http://localhost:5002/game/check-card", {
-      cardId: checkCardNumber,
-      gameId: Number(gameId), // ✅ ensure number
-    });
+    try {
+      const res = await axios.post("http://localhost:5002/game/check-card", {
+        cardId: checkCardNumber,
+        gameId: Number(gameId), // ensure number
+      });
 
-    const data = res.data;
+      const data = res.data;
 
-    setSampleCard(data.card.card.layout);
-    setCheckResult(data.isWinner ? "🎉 Card is a WINNER!" : "❌ Card did NOT win.");
-    setDrawnNumbers(data.drawnNumbers || []);
-  } catch (err: any) {
-    if (err.response && err.response.data && err.response.data.message) {
-      setCheckResult(`⚠️ ${err.response.data.message}`);
-    } else {
-      setCheckResult("⚠️ Error checking card. Please try again.");
+      setSampleCard(data.card.card.layout);
+      setCheckResult(data.isWinner ? "🎉 Card is a WINNER!" : "❌ Card did NOT win.");
+      setDrawnNumbers(data.drawnNumbers || []);
+    } catch (err: any) {
+      if (err.response && err.response.data && err.response.data.message) {
+        setCheckResult(`⚠️ ${err.response.data.message}`);
+      } else {
+        setCheckResult("⚠️ Error checking card. Please try again.");
+      }
+      setSampleCard([]); // clear the card display
     }
-    setSampleCard([]); // clear the card display
-  }
-};
+  };
 
-// Close modal and reset state
-const handleCloseCheckModal = () => {
-  setShowCheckModal(false);
-  setSampleCard([]);       // clear the card
-  setCheckCardNumber(null); // clear input
-  setCheckResult(null);     // clear result
-};
+  // Close modal and reset state
+  const handleCloseCheckModal = () => {
+    setShowCheckModal(false);
+    setSampleCard([]);       // clear the card
+    setCheckCardNumber(null); // clear input
+    setCheckResult(null);     // clear result
+  };
 
-
-
+  // Dynamic tray height (1 or 2 rows)
+  const trayRows = rollingNumbers.length > MAX_BOTTOM_ROW_COUNT ? 2 : 1;
+  const trayRowHeight = BALL_DIAMETER_PX + 28; // include gaps and shadow space
+  const trayHeightPx = BOTTOM_OFFSET_PX + trayRows * trayRowHeight;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-700 via-blue-700 to-teal-600 p-10 flex flex-col items-center gap-10 text-white select-none">
+    <div className="min-h-screen bg-gradient-to-br from-purple-700 via-blue-700 to-teal-600 p-10 flex flex-col items-center gap-10 text-white select-none" style={{ paddingBottom: trayHeightPx + 32 }} >
       {/* Game Status Display */}
       <div className="flex items-center gap-4">
         <div className="text-xl font-bold">
@@ -301,16 +424,12 @@ const handleCloseCheckModal = () => {
       {showCheckModal && (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
           <div className="bg-white text-black p-6 rounded-lg shadow-lg w-96 relative">
-            
-            {/* X Close Button */}
-            {/* X Close Button */}
-        <button
-          onClick={handleCloseCheckModal}
-          className="absolute top-3 right-3 text-gray-500 hover:text-gray-700 text-xl font-bold"
-        >
-          ×
-        </button>
-
+            <button
+              onClick={handleCloseCheckModal}
+              className="absolute top-3 right-3 text-gray-500 hover:text-gray-700 text-xl font-bold"
+            >
+              ×
+            </button>
 
             <h2 className="text-xl font-bold mb-4 text-center">Check Card</h2>
 
@@ -369,40 +488,47 @@ const handleCloseCheckModal = () => {
         </div>
       )}
 
-      {/* Rolling Numbers Display */}
-      <div className="fixed bottom-0 left-0 right-0 h-32 bg-black bg-opacity-80 overflow-hidden border-t-2 border-yellow-400">
-        {rollingNumbers.map((rollingNumber, index) => (
+      {/* Rolling Balls Tray */}
+      <div
+        ref={trayRef}
+        className="fixed bottom-0 left-0 right-0 bg-neutral-900/95 overflow-hidden border-t border-neutral-800 shadow-inner"
+        style={{ height: `${trayHeightPx}px` }}
+      >
+        {rollingNumbers.map((ball) => (
           <div
-            key={`${rollingNumber.number}-${index}`}
-            className={`absolute text-2xl font-bold text-white ${
-              rollingNumber.isRolling 
-                ? 'animate-bounce text-yellow-400 drop-shadow-lg' 
-                : 'text-green-400 drop-shadow-md'
-            }`}
+            key={ball.id}
+            className="absolute left-0"
             style={{
-              left: `${rollingNumber.position.x}%`,
-              top: `${rollingNumber.position.y}%`,
-              transform: rollingNumber.isRolling ? 'scale(1.2)' : 'scale(1)',
-              transition: rollingNumber.isRolling ? 'none' : 'all 0.5s ease-out',
-              textShadow: rollingNumber.isRolling 
-                ? '0 0 10px rgba(255, 255, 0, 0.8)' 
-                : '0 0 5px rgba(34, 197, 94, 0.6)',
+              bottom: BOTTOM_OFFSET_PX,
+              transform: `translate(${ball.x - BALL_RADIUS_PX}px, ${ball.y}px)`,
             }}
           >
-            {rollingNumber.number}
-            {/* Trail effect for rolling numbers */}
-            {rollingNumber.isRolling && (
-              <div className="absolute -top-1 -left-1 w-8 h-8 bg-yellow-400 bg-opacity-30 rounded-full animate-ping"></div>
-            )}
+            {/* Ball with gradient and rotation */}
+            <div
+              className={`relative rounded-full flex items-center justify-center text-white font-bold select-none shadow-xl bg-gradient-to-br ${ball.gradientFrom} ${ball.gradientTo}`}
+              style={{ width: BALL_DIAMETER_PX, height: BALL_DIAMETER_PX, transform: `rotate(${ball.rotationDeg}deg)` }}
+            >
+              <span className="drop-shadow-md text-xl">{ball.number}</span>
+              {/* subtle specular highlight */}
+              <div
+                className="pointer-events-none absolute inset-0 rounded-full bg-white/10"
+                style={{ maskImage: 'radial-gradient(circle at 30% 30%, white 20%, transparent 60%)' }}
+              />
+            </div>
+            {/* Shadow under ball */}
+            <div
+              className="pointer-events-none absolute left-1/2 -translate-x-1/2"
+              style={{ width: BALL_DIAMETER_PX * 0.9, height: 8, bottom: -6, background: 'rgba(0,0,0,0.45)', filter: 'blur(6px)', borderRadius: 9999 }}
+            />
           </div>
         ))}
-        
-        {/* Instructions and Counter */}
+
+        {/* Counters */}
         <div className="absolute bottom-2 left-2 text-xs text-gray-400">
           Drawn Numbers: {drawnNumbers.length}
         </div>
         <div className="absolute bottom-2 right-2 text-xs text-yellow-400">
-          Rolling: {rollingNumbers.filter(rn => rn.isRolling).length}
+          Rolling: {rollingNumbers.filter(rn => !rn.settled).length}
         </div>
       </div>
     </div>

@@ -52,17 +52,25 @@ function App() {
     setTimeout(() => setLoading(false), 1000);
   }, []);
 
-  const handleStartGame = async (selectedCards: number[]) => {
+  const handleStartGame = async (selectedCards: number[], gameConfig: {
+    gameType?: 'STANDARD' | 'ADVANCED';
+    patternsRequired?: number;
+    amount?: number;
+    gameName?: string;
+  }) => {
     try {
       const payload = {
-        name: "Friday Night Bingo",
+        name: gameConfig.gameName || "Friday Night Bingo",
         createdBy: 1,
         cardIds: selectedCards,
+        gameType: gameConfig.gameType || 'STANDARD',
+        patternsRequired: gameConfig.patternsRequired || 1,
+        amount: gameConfig.amount,
       };
       const res = await axios.post("http://localhost:5002/game", payload);
       const gameId = res.data?.id || res.data?._id; // Adjust depending on backend response
       if (gameId) {
-        await axios.post(`http://localhost:5002/game/start/${gameId}`);
+        // Don't start the game here - let the Start button in DrawnNumbers do that
         navigate(`/drawn-numbers/${gameId}`);
       }
     } catch (err) {
@@ -80,7 +88,7 @@ function App() {
           <CardSelection
             playedCards={[]}
             onSelectionChange={() => {}}
-            onStart={(cards) => handleStartGame(cards)}
+            onStart={(cards, gameConfig) => handleStartGame(cards, gameConfig)}
           />
         }
       />

@@ -81,7 +81,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
     // Fetch current game status
     const fetchGameStatus = async () => {
       try {
-        const response = await axios.get(`http://localhost:5002/game/${gameId}`);
+        const response = await axios.get(`https://bingonestjsapp.onrender.com/game/${gameId}`);
         setGameStatus(response.data.status);
       } catch (error) {
         console.error('Error fetching game status:', error);
@@ -90,7 +90,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
 
     fetchGameStatus();
 
-    const socket: Socket = io("http://localhost:5002", {
+    const socket: Socket = io("https://bingonestjsapp.onrender.com", {
       transports: ["websocket"],
     });
 
@@ -122,7 +122,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
   // Control handlers
   const startGame = async () => {
     try {
-      await axios.post(`http://localhost:5002/game/start/${gameId}`);
+      await axios.post(`https://bingonestjsapp.onrender.com/game/start/${gameId}`);
       setGameStatus("IN_PROGRESS");
     } catch (error) {
       console.error('Error starting game:', error);
@@ -131,7 +131,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
 
   const pauseGame = async () => {
     try {
-      await axios.post(`http://localhost:5002/game/pause/${gameId}`);
+      await axios.post(`https://bingonestjsapp.onrender.com/game/pause/${gameId}`);
       setGameStatus("PAUSED");
     } catch (error) {
       console.error('Error pausing game:', error);
@@ -140,7 +140,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
 
   const playGame = async () => {
     try {
-      await axios.post(`http://localhost:5002/game/play/${gameId}`);
+      await axios.post(`https://bingonestjsapp.onrender.com/game/play/${gameId}`);
       setGameStatus("IN_PROGRESS");
     } catch (error) {
       console.error('Error resuming game:', error);
@@ -149,7 +149,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
 
   const stopGame = async () => {
     try {
-      await axios.post(`http://localhost:5002/game/stop/${gameId}`);
+      await axios.post(`https://bingonestjsapp.onrender.com/game/stop/${gameId}`);
       setGameStatus("FINISHED");
       setDrawnNumbers([]);
       // Navigate back to card selection page
@@ -161,7 +161,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
 
   const resetGame = async () => {
     try {
-      await axios.post(`http://localhost:5002/game/reset/${gameId}`);
+      await axios.post(`https://bingonestjsapp.onrender.com/game/reset/${gameId}`);
       setGameStatus("WAITING");
       setDrawnNumbers([]);
       setCurrentNumber(null);
@@ -174,7 +174,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
 
   const refreshGameStatus = async () => {
     try {
-      const response = await axios.get(`http://localhost:5002/game/${gameId}`);
+      const response = await axios.get(`https://bingonestjsapp.onrender.com/game/${gameId}`);
       setGameStatus(response.data.status);
     } catch (error) {
       console.error('Error fetching game status:', error);
@@ -263,7 +263,7 @@ const DrawnNumbers: React.FC<DrawnNumbersProps> = ({ gameId }) => {
   if (!checkCardNumber) return;
 
   try {
-    const res = await axios.post("http://localhost:5002/game/check-card", {
+    const res = await axios.post("https://bingonestjsapp.onrender.com/game/check-card", {
       cardId: checkCardNumber,
       gameId: Number(gameId), // ✅ ensure number
     });

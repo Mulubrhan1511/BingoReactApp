@@ -8,7 +8,7 @@ import Loader from "./common/Loader";
 import CardSelection from "./pages/CardSelection";
 import DrawnNumbers from "./pages/DrawnNumbers";
 
-const socket = io("http://localhost:5002"); // adjust if backend is on different host
+const socket = io("https://bingonestjsapp.onrender.com"); // adjust if backend is on different host
 
 function DrawnNumbersWrapper() {
   const { id } = useParams();
@@ -18,7 +18,7 @@ function DrawnNumbersWrapper() {
     if (!id) return;
 
     // Initial fetch for already drawn numbers
-    axios.get(`http://localhost:5002/game/${id}/numbers`)
+    axios.get(`https://bingonestjsapp.onrender.com/game/${id}/numbers`)
       .then(res => {
         if (Array.isArray(res.data)) {
           setDrawnNumbers(res.data);
@@ -67,7 +67,7 @@ function App() {
         patternsRequired: gameConfig.patternsRequired || 1,
         amount: gameConfig.amount,
       };
-      const res = await axios.post("http://localhost:5002/game", payload);
+      const res = await axios.post("https://bingonestjsapp.onrender.com/game", payload);
       const gameId = res.data?.id || res.data?._id; // Adjust depending on backend response
       if (gameId) {
         // Don't start the game here - let the Start button in DrawnNumbers do that
